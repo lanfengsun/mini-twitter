@@ -8,7 +8,7 @@
 // merge-at-read path for celebrity posts, and the first read of each user is a cold rebuild.
 import http from 'k6/http';
 import { check } from 'k6';
-import { BASE, USERS, tokenFor, headers, pick, track, text } from './lib.js';
+import { BASE, setupSessions, randomToken, randomUser, params, pick, track, text } from './lib.js';
 
 const RATE = parseInt(__ENV.RATE || '1000');
 
@@ -26,29 +26,30 @@ export const options = {
   },
 };
 
+export function setup() { return { n: setupSessions() }; }
+
 // each VU remembers the last post ids it saw, so likes/replies target real posts
 const seen = [];
 
-export default function () {
-  const tok = tokenFor(Math.floor(Math.random() * 1e9));
-  const h = headers(tok);
+export default function (data) {
+  const tok = randomToken(data.n);
   const r = Math.random();
 
   if (r < 0.70 || seen.length === 0) {
-    const res = http.get(`${BASE}/api/feed`, Object.assign({ tags: { op: 'feed' } }, h));
+    const res = http.get(`${BASE}/api/feed`, params(tok, 'feed', 'GET /api/feed'));
     check(res, { 'feed 200': (x) => x.status === 200 });
     if (res.status === 200) {
       for (const p of res.json('posts') || []) { seen.push(p.id); if (seen.length > 50) seen.shift(); }
     }
   } else if (r < 0.80) {
-    track(http.post(`${BASE}/api/posts`, JSON.stringify({ text: text() }), Object.assign({ tags: { op: 'post' } }, h)));
+    track(http.post(`${BASE}/api/posts`, JSON.stringify({ text: text() }), params(tok, 'post', 'POST /api/posts')));
   } else if (r < 0.88) {
-    track(http.post(`${BASE}/api/posts/${pick(seen)}/like`, null, Object.assign({ tags: { op: 'like' } }, h)));
+    track(http.post(`${BASE}/api/posts/${pick(seen)}/like`, null, params(tok, 'like', 'POST /api/posts/:id/like')));
   } else if (r < 0.93) {
-    track(http.post(`${BASE}/api/follow/u${1 + Math.floor(Math.random() * USERS)}`, null, Object.assign({ tags: { op: 'follow' } }, h)));
+    track(http.post(`${BASE}/api/follow/${randomUser(data.n)}`, null, params(tok, 'follow', 'POST /api/follow/:user')));
   } else if (r < 0.97) {
-    track(http.post(`${BASE}/api/posts/${pick(seen)}/reply`, JSON.stringify({ text: text() }), Object.assign({ tags: { op: 'reply' } }, h)));
+    track(http.post(`${BASE}/api/posts/${pick(seen)}/reply`, JSON.stringify({ text: text() }), params(tok, 'reply', 'POST /api/posts/:id/reply')));
   } else {
-    http.get(`${BASE}/api/posts/${pick(seen)}/replies`, Object.assign({ tags: { op: 'replies' } }, h));
+    http.get(`${BASE}/api/posts/${pick(seen)}/replies`, params(tok, 'replies', 'GET /api/posts/:id/replies'));
   }
 }

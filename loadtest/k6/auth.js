@@ -5,7 +5,7 @@
 //   k6 run -e SIGNUP_RATE=20 -e LOGIN_RATE=20 loadtest/k6/auth.js
 import http from 'k6/http';
 import { check } from 'k6';
-import { BASE, SESSIONS } from './lib.js';
+import { BASE, setupSessions, randomUser } from './lib.js';
 
 export const options = {
   scenarios: {
@@ -26,14 +26,17 @@ export const options = {
 const json = { headers: { 'Content-Type': 'application/json' } };
 const run = Date.now().toString(36);
 
+export function setup() { return { n: setupSessions() }; }
+
 export function signup() {
   const name = `k6_${run}_${__VU}_${__ITER}`.slice(0, 20);
-  const res = http.post(`${BASE}/api/signup`, JSON.stringify({ username: name, password: 'password' }), Object.assign({ tags: { op: 'signup' } }, json));
+  const res = http.post(`${BASE}/api/signup`, JSON.stringify({ username: name, password: 'password' }),
+    Object.assign({ tags: { op: 'signup', name: 'POST /api/signup' } }, json));
   check(res, { 'signup 201': (r) => r.status === 201 });
 }
 
-export function login() {
-  const name = `u${1 + Math.floor(Math.random() * SESSIONS)}`;
-  const res = http.post(`${BASE}/api/login`, JSON.stringify({ username: name, password: 'password' }), Object.assign({ tags: { op: 'login' } }, json));
+export function login(data) {
+  const res = http.post(`${BASE}/api/login`, JSON.stringify({ username: randomUser(data.n), password: 'password' }),
+    Object.assign({ tags: { op: 'login', name: 'POST /api/login' } }, json));
   check(res, { 'login 200': (r) => r.status === 200 });
 }

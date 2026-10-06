@@ -8,7 +8,7 @@
 // steady reader, to show reads stay healthy while the write queue is deep.
 import http from 'k6/http';
 import { check } from 'k6';
-import { BASE, tokenFor, headers, track, text } from './lib.js';
+import { BASE, setupSessions, randomToken, params, track, text } from './lib.js';
 
 const BURST_RATE = parseInt(__ENV.BURST_RATE || '5000');
 const BURST_DURATION = __ENV.BURST_DURATION || '60s';
@@ -40,17 +40,19 @@ export const options = {
   },
 };
 
-export function burst() {
+export function setup() { return { n: setupSessions() }; }
+
+export function burst(data) {
   track(http.post(`${BASE}/api/posts`, JSON.stringify({ text: text() }),
-    Object.assign({ tags: { op: 'post' } }, headers(tokenFor(Math.floor(Math.random() * 1e9))))));
+    params(randomToken(data.n), 'post', 'POST /api/posts')));
 }
 
 export function celeb() {
   track(http.post(`${BASE}/api/posts`, JSON.stringify({ text: 'celebrity update ' + text() }),
-    Object.assign({ tags: { op: 'celeb_post' } }, headers('loadtoken-celeb1'))));
+    params('loadtoken-celeb1', 'celeb_post', 'POST /api/posts (celebrity)')));
 }
 
-export function reader() {
-  const res = http.get(`${BASE}/api/feed`, Object.assign({ tags: { op: 'feed' } }, headers(tokenFor(Math.floor(Math.random() * 1e9)))));
+export function reader(data) {
+  const res = http.get(`${BASE}/api/feed`, params(randomToken(data.n), 'feed', 'GET /api/feed'));
   check(res, { 'feed 200': (x) => x.status === 200 });
 }

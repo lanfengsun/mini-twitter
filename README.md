@@ -105,6 +105,9 @@ make load-auth                # signup/login storm (bcrypt is the first CPU wall
 make scale N=4                # then re-run to compare 1 → 2 → 4 API replicas
 ```
 
+The scripts find the seeded load-test users on their own (they probe how many `loadtoken-N` sessions exist),
+so they work with both `make seed-small` and `make seed`; override with `-e SESSIONS=n`.
+
 All scenarios use an **open model** (fixed arrival rate), so a slow server cannot slow the offered load and
 hide its own latency (coordinated omission). **Saturation** is defined as the first load step where p99 > 500 ms,
 the error rate (5xx / timeouts) > 1%, or achieved throughput stops following offered load.
