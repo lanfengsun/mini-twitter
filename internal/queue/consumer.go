@@ -45,10 +45,18 @@ func NewConsumer(rdb *redis.Client, name string, h Handler, log *slog.Logger) *C
 	}
 }
 
-// Run blocks until ctx is cancelled.
-func (c *Consumer) Run(ctx context.Context) error {
+// ensureGroup creates the consumer group (and the stream, if absent). Safe to call repeatedly.
+func (c *Consumer) ensureGroup(ctx context.Context) error {
 	err := c.rdb.XGroupCreateMkStream(ctx, rds.StreamEvents, rds.Group, "0").Err()
 	if err != nil && !strings.Contains(err.Error(), "BUSYGROUP") {
+		return err
+	}
+	return nil
+}
+
+// Run blocks until ctx is cancelled.
+func (c *Consumer) Run(ctx context.Context) error {
+	if err := c.ensureGroup(ctx); err != nil {
 		return err
 	}
 	go c.reclaimLoop(ctx)
@@ -61,10 +69,21 @@ func (c *Consumer) Run(ctx context.Context) error {
 			Block:    time.Second,
 		}).Result()
 		if err != nil {
-			if !errors.Is(err, redis.Nil) && ctx.Err() == nil {
-				c.log.Error("xreadgroup failed", "err", err.Error())
-				time.Sleep(500 * time.Millisecond)
+			if errors.Is(err, redis.Nil) || ctx.Err() != nil {
+				continue
 			}
+			if strings.Contains(err.Error(), "NOGROUP") {
+				// The stream or group vanished (Redis flushed, or restarted without its data).
+				// Recreate it from the start so entries added since are not skipped.
+				c.log.Warn("consumer group missing, recreating it")
+				if gerr := c.ensureGroup(ctx); gerr != nil {
+					c.log.Error("could not recreate consumer group", "err", gerr.Error())
+					time.Sleep(time.Second)
+				}
+				continue
+			}
+			c.log.Error("xreadgroup failed", "err", err.Error())
+			time.Sleep(500 * time.Millisecond)
 			continue
 		}
 		for _, s := range streams {
