@@ -1,0 +1,33 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: warn
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        filters:
+          - name: label
+            values: [ "com.docker.compose.project=mini-twitter" ]
+    relabel_configs:
+      - source_labels: [ __meta_docker_container_label_com_docker_compose_service ]
+        target_label: service
+      - source_labels: [ __meta_docker_container_name ]
+        regex: "/(.*)"
+        target_label: container
+    pipeline_stages:
+      # api/worker log JSON (slog): promote `level` to a label; everything else is queried
+      # with `| json` in LogQL. Non-JSON lines (nginx, postgres) pass through untouched.
+      - json:
+          expressions:
+            level: level
+      - labels:
+          level:

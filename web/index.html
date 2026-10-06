@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mini Twitter</title>
+  <style>
+    :root { --bg:#f5f7fa; --card:#fff; --ink:#14171a; --muted:#657786; --line:#e1e8ed; --accent:#1d9bf0; --danger:#d93025; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    header { background:var(--card); border-bottom:1px solid var(--line); padding:10px 16px; display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; }
+    header h1 { font-size:18px; margin:0; color:var(--accent); }
+    main { max-width:600px; margin:16px auto; padding:0 12px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:12px; }
+    input, textarea { width:100%; padding:8px; border:1px solid var(--line); border-radius:6px; font:inherit; }
+    textarea { resize:vertical; min-height:64px; }
+    button { background:var(--accent); color:#fff; border:0; border-radius:16px; padding:6px 14px; font:inherit; cursor:pointer; }
+    button.ghost { background:transparent; color:var(--accent); padding:4px 8px; }
+    button:disabled { opacity:.5; cursor:default; }
+    .row { display:flex; gap:8px; align-items:center; }
+    .row > input { flex:1; }
+    .muted { color:var(--muted); font-size:13px; }
+    .post .head { display:flex; justify-content:space-between; }
+    .post .author { font-weight:600; }
+    .post .text { margin:4px 0 8px; white-space:pre-wrap; word-wrap:break-word; }
+    .post .actions { display:flex; gap:4px; }
+    .replies { margin-top:8px; padding-left:12px; border-left:3px solid var(--line); }
+    .reply { margin:6px 0; }
+    .toast { position:fixed; bottom:16px; left:50%; transform:translateX(-50%); background:#14171a; color:#fff; padding:8px 14px; border-radius:8px; opacity:0; transition:opacity .2s; pointer-events:none; }
+    .toast.show { opacity:.95; }
+    .toast.err { background:var(--danger); }
+    .hidden { display:none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Mini Twitter</h1>
+    <div id="who" class="row hidden"><span id="whoName" class="muted"></span><button id="logoutBtn" class="ghost">Log out</button></div>
+  </header>
+  <main>
+    <section id="auth" class="card">
+      <div class="row" style="margin-bottom:8px"><input id="username" placeholder="username (a-z, 0-9, _)" autocomplete="username"></div>
+      <div class="row" style="margin-bottom:8px"><input id="password" type="password" placeholder="password (6+ characters)" autocomplete="current-password"></div>
+      <div class="row"><button id="loginBtn">Log in</button><button id="signupBtn" class="ghost">Sign up</button></div>
+    </section>
+
+    <section id="app" class="hidden">
+      <div class="card">
+        <textarea id="composer" maxlength="280" placeholder="What's happening?"></textarea>
+        <div class="row" style="justify-content:space-between;margin-top:8px"><span id="count" class="muted">0 / 280</span><button id="postBtn">Post</button></div>
+      </div>
+      <div class="card row">
+        <input id="followName" placeholder="follow a user, e.g. celeb1 or u42">
+        <button id="followBtn">Follow</button>
+      </div>
+      <div class="row" style="justify-content:space-between;margin-bottom:8px">
+        <strong>Home</strong><button id="refreshBtn" class="ghost">Refresh</button>
+      </div>
+      <div id="feed"></div>
+      <div class="row" style="justify-content:center"><button id="moreBtn" class="ghost hidden">Load more</button></div>
+      <p id="empty" class="muted hidden">Nothing here yet. Follow someone, or post something.</p>
+    </section>
+  </main>
+  <div id="toast" class="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>

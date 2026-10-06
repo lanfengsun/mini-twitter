@@ -1,0 +1,237 @@
+name: mini-twitter
+
+# Every container has CPU/memory limits so load-test results are reproducible.
+# Give Docker Desktop >= 6 CPUs and ~10 GB RAM (Settings -> Resources).
+
+x-pg: &pg
+  image: postgres:16-alpine
+  environment:
+    POSTGRES_USER: app
+    POSTGRES_PASSWORD: app
+    POSTGRES_DB: app
+  command:
+    - postgres
+    - -c
+    - shared_buffers=256MB
+    - -c
+    - max_connections=300
+    - -c
+    - synchronous_commit=off   # trades <1s of commit durability for write throughput
+    - -c
+    - checkpoint_timeout=15min
+    - -c
+    - max_wal_size=2GB
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U app -d app"]
+    interval: 3s
+    timeout: 3s
+    retries: 30
+  deploy:
+    resources:
+      limits: { cpus: "1.0", memory: 1g }
+
+x-env: &env
+  SHARD_DSNS: postgres://app:app@pg0:5432/app?sslmode=disable,postgres://app:app@pg1:5432/app?sslmode=disable,postgres://app:app@pg2:5432/app?sslmode=disable
+  REDIS_ADDR: redis:6379
+  CELEB_THRESHOLD: "10000"
+
+services:
+  # ------------------------------------------------------------------ data
+  pg0:
+    <<: *pg
+    volumes: [ "pg0:/var/lib/postgresql/data", "./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro" ]
+  pg1:
+    <<: *pg
+    volumes: [ "pg1:/var/lib/postgresql/data", "./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro" ]
+  pg2:
+    <<: *pg
+    volumes: [ "pg2:/var/lib/postgresql/data", "./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro" ]
+
+  redis:
+    image: redis:7-alpine
+    # volatile-lru: under memory pressure only keys with a TTL (feeds, caches) are evicted;
+    # the queue stream is never evicted. AOF everysec makes queued events survive a restart.
+    command: ["redis-server", "--maxmemory", "1200mb", "--maxmemory-policy", "volatile-lru",
+              "--appendonly", "yes", "--appendfsync", "everysec", "--save", ""]
+    volumes: [ "redis:/data" ]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 1536m }
+
+  # ------------------------------------------------------------------ app
+  api:
+    build: { context: ., args: { SERVICE: api } }
+    image: mini-twitter-api
+    environment:
+      <<: *env
+      SHARD_MAX_CONNS: "20"
+      QUEUE_MAX_DEPTH: "100000"
+      BCRYPT_COST: "10"
+      LOG_SAMPLE_RATE: "0.01"
+      GOMEMLIMIT: 320MiB
+    depends_on:
+      pg0: { condition: service_healthy }
+      pg1: { condition: service_healthy }
+      pg2: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    deploy:
+      replicas: 2            # override with: make scale N=4
+      resources:
+        limits: { cpus: "1.0", memory: 384m }
+
+  worker:
+    build: { context: ., args: { SERVICE: worker } }
+    image: mini-twitter-worker
+    environment:
+      <<: *env
+      SHARD_MAX_CONNS: "30"
+      WORKER_CONCURRENCY: "32"
+      GOMEMLIMIT: 320MiB
+    depends_on:
+      pg0: { condition: service_healthy }
+      pg1: { condition: service_healthy }
+      pg2: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "1.5", memory: 384m }
+
+  nginx:
+    image: nginx:1.28-alpine
+    ports: [ "8080:80" ]
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./web:/usr/share/nginx/html:ro
+    depends_on: [ api ]
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 128m }
+
+  seed:
+    profiles: [ tools ]
+    build: { context: ., args: { SERVICE: seed } }
+    image: mini-twitter-seed
+    environment:
+      <<: *env
+      USERS: "${USERS:-500000}"
+      POSTS: "${POSTS:-2000000}"
+      AVG_FOLLOWS: "${AVG_FOLLOWS:-6}"
+      CELEBS: "${CELEBS:-1}"
+      CELEB_FOLLOWERS: "${CELEB_FOLLOWERS:-300000}"
+      LOAD_SESSIONS: "${LOAD_SESSIONS:-10000}"
+    depends_on:
+      pg0: { condition: service_healthy }
+      pg1: { condition: service_healthy }
+      pg2: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  # ------------------------------------------------------------------ observability
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=6h
+    ports: [ "9090:9090" ]
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom:/prometheus
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 512m }
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    ports: [ "3000:3000" ]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana:/var/lib/grafana
+    depends_on: [ prometheus, loki ]
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 256m }
+
+  # cAdvisor reads per-container CPU/memory from the kernel and exposes it to Prometheus.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=5s
+      - --store_container_labels=false
+      - --whitelisted_container_labels=com.docker.compose.service
+    privileged: true
+    devices: [ "/dev/kmsg" ]
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 256m }
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.62.0
+    command: [ "--redis.addr=redis://redis:6379" ]
+    depends_on: [ redis ]
+    deploy:
+      resources:
+        limits: { cpus: "0.2", memory: 64m }
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    environment:
+      DATA_SOURCE_NAME: postgresql://app:app@pg0:5432/app?sslmode=disable,postgresql://app:app@pg1:5432/app?sslmode=disable,postgresql://app:app@pg2:5432/app?sslmode=disable
+    depends_on:
+      pg0: { condition: service_healthy }
+      pg1: { condition: service_healthy }
+      pg2: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "0.2", memory: 96m }
+
+  loki:
+    image: grafana/loki:3.2.0
+    command: [ "-config.file=/etc/loki/loki.yml" ]
+    volumes:
+      - ./deploy/loki.yml:/etc/loki/loki.yml:ro
+      - loki:/loki
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 384m }
+
+  promtail:
+    image: grafana/promtail:3.2.0
+    command: [ "-config.file=/etc/promtail/promtail.yml" ]
+    volumes:
+      - ./deploy/promtail.yml:/etc/promtail/promtail.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on: [ loki ]
+    deploy:
+      resources:
+        limits: { cpus: "0.3", memory: 128m }
+
+volumes:
+  pg0:
+  pg1:
+  pg2:
+  redis:
+  prom:
+  grafana:
+  loki:
